@@ -1,158 +1,132 @@
-import Stripe from 'stripe'
 import { NextResponse } from 'next/server'
-import { stripe } from '@/app/lib/stripe'
-import { supabaseAdmin } from '@/app/lib/supabaseAdmin'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-function getString(v: unknown) {
-  return typeof v === 'string' ? v : null
+function s(v: unknown): string | null {
+  return typeof v === 'string' && v.length ? v : null
 }
 
 export async function POST(req: Request) {
-  const sig = req.headers.get('stripe-signature')
+  const stripeSecret = process.env.STRIPE_SECRET_KEY
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY
 
-  if (!sig || !webhookSecret) {
-    console.error('❌ Missing stripe-signature or STRIPE_WEBHOOK_SECRET')
-    return NextResponse.json({ error: 'Webhook misconfigured' }, { status: 400 })
+  if (!stripeSecret || !webhookSecret || !supabaseUrl || !serviceRole) {
+    return NextResponse.json({ error: 'Server misconfigured' }, { status: 500 })
   }
+
+  // ✅ import pas hier (build-safe)
+  const StripeMod = await import('stripe')
+  const Stripe = StripeMod.default
+  const { createClient } = await import('@supabase/supabase-js')
+
+  const stripe = new Stripe(stripeSecret, {
+    apiVersion: '2025-12-15.clover',
+  })
+
+  const supabaseAdmin = createClient(supabaseUrl, serviceRole, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  })
+
+  const sig = req.headers.get('stripe-signature')
+  if (!sig) return NextResponse.json({ error: 'Missing stripe-signature' }, { status: 400 })
 
   const body = await req.text()
 
-  let event: Stripe.Event
+  let event: any
   try {
     event = stripe.webhooks.constructEvent(body, sig, webhookSecret)
-  } catch (err: any) {
-    console.error('❌ Signature verification failed:', err?.message)
-    return NextResponse.json({ error: err?.message ?? 'Bad signature' }, { status: 400 })
+  } catch {
+    return NextResponse.json({ error: 'Bad signature' }, { status: 400 })
   }
 
-  try {
-    // -------------------------
-    // 1) checkout.session.completed
-    // -------------------------
-    if (event.type === 'checkout.session.completed') {
-      const session = event.data.object as Stripe.Checkout.Session
+  // A) checkout.session.completed
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object
+    const userId = s(session?.metadata?.supabase_user_id) ?? s(session?.client_reference_id)
+    const email = session?.customer_details?.email ?? null
+    const customerId = s(session?.customer)
+    const subscriptionId = s(session?.subscription)
 
-      const userId =
-        getString(session.metadata?.supabase_user_id) ??
-        getString(session.client_reference_id)
+    if (!userId) return NextResponse.json({ received: true })
 
-      const email = session.customer_details?.email ?? null
-      const customerId = getString(session.customer)
-      const subscriptionId = getString(session.subscription)
+    const { error } = await supabaseAdmin.from('profiles').upsert(
+      {
+        id: userId,
+        email,
+        is_pro: true,
+        plan: 'pro',
+        stripe_customer_id: customerId,
+        stripe_subscription_id: subscriptionId,
+      },
+      { onConflict: 'id' }
+    )
 
-      console.log('✅ checkout.session.completed', { userId, email, customerId, subscriptionId })
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ received: true })
+  }
 
-      if (!userId) return NextResponse.json({ received: true })
+  // B) subscription created/updated
+  if (event.type === 'customer.subscription.created' || event.type === 'customer.subscription.updated') {
+    const sub = event.data.object
+    const userId = s(sub?.metadata?.supabase_user_id)
+    const customerId = s(sub?.customer)
+    const subId = s(sub?.id)
+    const priceId = sub?.items?.data?.[0]?.price?.id ?? null
+    const currentPeriodEndISO =
+      sub?.current_period_end != null ? new Date(Number(sub.current_period_end) * 1000).toISOString() : null
 
-      const { error } = await supabaseAdmin
-        .from('profiles')
-        .upsert(
-          {
-            id: userId,
-            email,
-            is_pro: true,
-            plan: 'pro',
-            stripe_customer_id: customerId,
-            stripe_subscription_id: subscriptionId,
-          },
-          { onConflict: 'id' }
-        )
-
-      if (error) {
-        console.error('❌ Supabase upsert error:', error)
-        return NextResponse.json({ error: error.message }, { status: 500 })
-      }
-
-      return NextResponse.json({ received: true })
+    const payload: any = {
+      is_pro: true,
+      plan: 'pro',
+      stripe_customer_id: customerId,
+      stripe_subscription_id: subId,
+      stripe_price_id: priceId,
+      current_period_end: currentPeriodEndISO,
     }
 
-    // -------------------------
-    // 2) invoice.paid (keep Pro + period end + price id)
-    // -------------------------
-if (event.type === 'invoice.paid') {
-  const invoice: any = event.data.object // <- any: voorkomt "subscription bestaat niet"
+    let q = supabaseAdmin.from('profiles').update(payload)
+    const { error } = userId
+      ? await q.eq('id', userId)
+      : customerId
+      ? await q.eq('stripe_customer_id', customerId)
+      : subId
+      ? await q.eq('stripe_subscription_id', subId)
+      : await q.eq('id', '__never__')
 
-  const subId = getString(invoice.subscription)
-  const customerId = getString(invoice.customer)
-
-  if (!subId && !customerId) return NextResponse.json({ received: true })
-
-  // subscription ophalen + unwrap (sommige Stripe versies returnen Response<Subscription>)
-  const subResp: any = subId ? await stripe.subscriptions.retrieve(subId) : null
-  const sub: any = subResp ? (subResp.data ?? subResp) : null
-
-  const userId = sub ? getString(sub.metadata?.supabase_user_id) : null
-  const priceId = sub?.items?.data?.[0]?.price?.id ?? null
-
-  const currentPeriodEndISO =
-    sub?.current_period_end != null ? new Date(Number(sub.current_period_end) * 1000).toISOString() : null
-
-  const updatePayload: any = {
-    is_pro: true,
-    plan: 'pro',
-    stripe_customer_id: customerId,
-    stripe_subscription_id: subId,
-    stripe_price_id: priceId,
-    current_period_end: currentPeriodEndISO,
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ received: true })
   }
 
-  let q = supabaseAdmin.from('profiles').update(updatePayload)
+  // C) subscription deleted
+  if (event.type === 'customer.subscription.deleted') {
+    const sub = event.data.object
+    const userId = s(sub?.metadata?.supabase_user_id)
+    const customerId = s(sub?.customer)
+    const subId = s(sub?.id)
 
-  const { error } = userId
-    ? await q.eq('id', userId)
-    : customerId
-    ? await q.eq('stripe_customer_id', customerId)
-    : await q.eq('stripe_subscription_id', subId as string)
+    const payload = {
+      is_pro: false,
+      plan: 'free',
+      stripe_subscription_id: null,
+      stripe_price_id: null,
+      current_period_end: null,
+    }
 
-  if (error) {
-    console.error('❌ Supabase update error:', error)
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    let q = supabaseAdmin.from('profiles').update(payload)
+    const { error } = userId
+      ? await q.eq('id', userId)
+      : customerId
+      ? await q.eq('stripe_customer_id', customerId)
+      : subId
+      ? await q.eq('stripe_subscription_id', subId)
+      : await q.eq('id', '__never__')
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ received: true })
   }
 
   return NextResponse.json({ received: true })
-}
-
-    // -------------------------
-    // 3) customer.subscription.deleted (revert to Free)
-    // -------------------------
-    if (event.type === 'customer.subscription.deleted') {
-      const sub = event.data.object as Stripe.Subscription
-
-      const userId = getString(sub.metadata?.supabase_user_id)
-      const customerId = getString(sub.customer)
-      const subId = getString(sub.id)
-
-      const payload = {
-        is_pro: false,
-        plan: 'free',
-        stripe_subscription_id: null,
-        stripe_price_id: null,
-        current_period_end: null,
-      }
-
-      let q = supabaseAdmin.from('profiles').update(payload)
-
-      const { error } = userId
-        ? await q.eq('id', userId)
-        : customerId
-        ? await q.eq('stripe_customer_id', customerId)
-        : await q.eq('stripe_subscription_id', subId as string)
-
-      if (error) {
-        console.error('❌ Supabase revert error:', error)
-        return NextResponse.json({ error: error.message }, { status: 500 })
-      }
-
-      return NextResponse.json({ received: true })
-    }
-
-    return NextResponse.json({ received: true })
-  } catch (err: any) {
-    console.error('❌ Webhook handler error:', err?.message)
-    return NextResponse.json({ error: err?.message ?? 'Webhook error' }, { status: 500 })
-  }
 }
