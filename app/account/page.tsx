@@ -1,5 +1,5 @@
 'use client'
-console.log('ACCOUNT PAGE VERSION: 2026-01-15 v1 (Matches DealPilot UI)')
+console.log('ACCOUNT PAGE VERSION: 2026-01-20 v2 (Upgrade URL hard-fix + debug)')
 
 import React, { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { supabase } from '../lib/supabaseClient'
@@ -67,16 +67,6 @@ const s = {
     boxShadow: '0 16px 40px rgba(0,0,0,0.35)',
   } as CSSProperties,
 
-  btnDanger: {
-    border: '1px solid rgba(239,68,68,0.35)',
-    background: 'rgba(239,68,68,0.12)',
-    color: '#fecaca',
-    padding: '10px 12px',
-    borderRadius: 12,
-    fontWeight: 900,
-    cursor: 'pointer',
-  } as CSSProperties,
-
   chip: {
     padding: '6px 10px',
     borderRadius: 999,
@@ -114,11 +104,20 @@ const s = {
   divider: { height: 1, background: 'rgba(255,255,255,0.10)', margin: '12px 0' } as CSSProperties,
 
   h1: { fontSize: 26, fontWeight: 950, margin: '14px 0 6px' } as CSSProperties,
-  h2: { fontSize: 15, fontWeight: 950, margin: '14px 0 10px' } as CSSProperties,
   mini: { fontSize: 12, color: 'rgba(229,231,235,0.72)', lineHeight: 1.5 } as CSSProperties,
   muted: { color: 'rgba(229,231,235,0.72)' } as CSSProperties,
 
   link: { color: '#a5b4fc', textDecoration: 'none', fontWeight: 900 } as CSSProperties,
+}
+
+function isHttpUrl(v: unknown): v is string {
+  if (typeof v !== 'string') return false
+  try {
+    const u = new URL(v)
+    return u.protocol === 'http:' || u.protocol === 'https:'
+  } catch {
+    return false
+  }
 }
 
 // ---------- page ----------
@@ -127,6 +126,7 @@ export default function AccountPage() {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [upgrading, setUpgrading] = useState(false)
   const [userEmail, setUserEmail] = useState<string | null>(null)
+  const [upgradeError, setUpgradeError] = useState<string | null>(null)
 
   const qs = useMemo(() => {
     if (typeof window === 'undefined') return ''
@@ -156,7 +156,6 @@ export default function AccountPage() {
     }
 
     if (!p) {
-      // Create profile for new user
       const { error: insertError } = await supabase
         .from('profiles')
         .upsert({ id: data.user.id, email: data.user.email, is_pro: false, plan: 'free' })
@@ -167,7 +166,6 @@ export default function AccountPage() {
         return
       }
 
-      // Re-fetch the profile
       const { data: newP, error: refetchError } = await supabase
         .from('profiles')
         .select('id,email,is_pro,plan')
@@ -200,31 +198,51 @@ export default function AccountPage() {
   }
 
   const upgrade = async () => {
+    setUpgradeError(null)
     setUpgrading(true)
 
-    const { data } = await supabase.auth.getUser()
-    if (!data.user) {
+    try {
+      const { data } = await supabase.auth.getUser()
+      if (!data.user) {
+        setUpgrading(false)
+        alert('Niet ingelogd')
+        return
+      }
+
+      const res = await fetch('/api/stripe/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: data.user.id, email: data.user.email }),
+      })
+
+      const json = await res.json().catch(() => ({}))
+
+      if (!res.ok) {
+        console.error('Checkout API error:', json)
+        setUpgradeError(json?.error ?? 'Checkout error (API)')
+        setUpgrading(false)
+        return
+      }
+
+      const url = json?.url
+
+      // ✅ HARD FIX: only allow valid http(s) URL
+      if (!isHttpUrl(url)) {
+        console.error('Invalid checkout url returned:', url, json)
+        setUpgradeError(
+          `Stripe URL is ongeldig. (debug: url=${String(url)})`
+        )
+        setUpgrading(false)
+        return
+      }
+
+      // redirect naar Stripe
+      window.location.assign(url)
+    } catch (e: any) {
+      console.error('Upgrade error:', e)
+      setUpgradeError(e?.message ?? 'Unknown error')
       setUpgrading(false)
-      alert('Niet ingelogd')
-      return
     }
-
-    const res = await fetch('/api/stripe/checkout', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: data.user.id, email: data.user.email }),
-    })
-
-    const json = await res.json()
-
-    if (!res.ok) {
-      setUpgrading(false)
-      console.error(json)
-      alert(json.error ?? 'Checkout error')
-      return
-    }
-
-    window.location.href = json.url
   }
 
   if (loading) {
@@ -314,17 +332,19 @@ export default function AccountPage() {
         <h1 style={s.h1}>Account</h1>
 
         {(showSuccess || showCanceled) && (
-          <div style={{ ...s.card, marginTop: 12, border: showSuccess ? '1px solid rgba(34,197,94,0.30)' : '1px solid rgba(239,68,68,0.30)' }}>
+          <div
+            style={{
+              ...s.card,
+              marginTop: 12,
+              border: showSuccess ? '1px solid rgba(34,197,94,0.30)' : '1px solid rgba(239,68,68,0.30)',
+            }}
+          >
             <div style={{ fontWeight: 950 }}>{showSuccess ? 'Betaling gelukt ✅' : 'Betaling geannuleerd'}</div>
             <div style={{ marginTop: 6, ...s.mini }}>
               {showSuccess ? 'Je account wordt (soms) binnen enkele seconden geüpdatet.' : 'Je abonnement is niet geactiveerd.'}
             </div>
             <div style={{ marginTop: 10 }}>
-              <button
-                onClick={() => window.location.reload()}
-                style={s.btn}
-                title="Refresh om je planstatus te herladen"
-              >
+              <button onClick={() => window.location.reload()} style={s.btn} title="Refresh om je planstatus te herladen">
                 Refresh status
               </button>
             </div>
@@ -367,6 +387,13 @@ export default function AccountPage() {
                 </ul>
                 <div style={{ marginTop: 10, ...s.mini }}>Je wordt doorgestuurd naar Stripe om je abonnement te activeren.</div>
               </div>
+
+              {upgradeError ? (
+                <div style={{ ...s.card, marginTop: 12, border: '1px solid rgba(239,68,68,0.30)' }}>
+                  <div style={{ fontWeight: 950 }}>Upgrade fout</div>
+                  <div style={{ marginTop: 6, ...s.mini }}>{upgradeError}</div>
+                </div>
+              ) : null}
 
               <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                 <button onClick={upgrade} disabled={upgrading} style={s.btnPrimary}>
