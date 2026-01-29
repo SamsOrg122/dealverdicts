@@ -1,4 +1,5 @@
 'use client'
+console.log('LOGIN DEPLOY CHECK: ' + new Date().toISOString())
 console.log('LOGIN PAGE VERSION: 2026-01-29 v3 (Landing hero + CTA, same DealVerdicts style)')
 
 import React, { useMemo, useState, type CSSProperties } from 'react'
