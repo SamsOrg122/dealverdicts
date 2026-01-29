@@ -2,7 +2,7 @@
 console.log('LOGIN DEPLOY CHECK: ' + new Date().toISOString())
 console.log('LOGIN PAGE VERSION: 2026-01-29 v3 (Landing hero + CTA, same DealVerdicts style)')
 
-import React, { useMemo, useState, type CSSProperties } from 'react'
+import React, { useEffect, useState, type CSSProperties } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { useRouter } from 'next/navigation'
 
@@ -19,6 +19,8 @@ const s = {
       'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji"',
   } as CSSProperties,
 
+  pageMobile: { padding: 12 } as CSSProperties,
+
   shell: { maxWidth: 1100, width: '100%', margin: '0 auto' } as CSSProperties,
 
   topbar: {
@@ -31,6 +33,13 @@ const s = {
     border: '1px solid rgba(255,255,255,0.10)',
     background: 'rgba(255,255,255,0.06)',
     backdropFilter: 'blur(10px)',
+  } as CSSProperties,
+
+  topbarMobile: {
+    padding: 12,
+    borderRadius: 16,
+    flexDirection: 'column',
+    alignItems: 'flex-start',
   } as CSSProperties,
 
   brand: { display: 'flex', alignItems: 'center', gap: 10 } as CSSProperties,
@@ -74,6 +83,8 @@ const s = {
     padding: 14,
   } as CSSProperties,
 
+  cardMobile: { padding: 12, borderRadius: 16 } as CSSProperties,
+
   hint: {
     borderRadius: 16,
     border: '1px solid rgba(255,255,255,0.12)',
@@ -84,6 +95,8 @@ const s = {
   divider: { height: 1, background: 'rgba(255,255,255,0.10)', margin: '12px 0' } as CSSProperties,
 
   h1: { fontSize: 34, fontWeight: 950, margin: '14px 0 8px', letterSpacing: -0.2 } as CSSProperties,
+  h1Mobile: { fontSize: 26, fontWeight: 950, margin: '10px 0 6px', letterSpacing: -0.2 } as CSSProperties,
+
   h2: { fontSize: 15, fontWeight: 950, margin: '14px 0 10px' } as CSSProperties,
   mini: { fontSize: 12, color: 'rgba(229,231,235,0.72)', lineHeight: 1.5 } as CSSProperties,
   muted: { color: 'rgba(229,231,235,0.72)' } as CSSProperties,
@@ -129,7 +142,6 @@ const s = {
     marginTop: 14,
   } as CSSProperties,
 
-  // responsive helpers
   layoutMobile: {
     display: 'grid',
     gridTemplateColumns: '1fr',
@@ -189,11 +201,14 @@ export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
+  const [isMobile, setIsMobile] = useState(false)
   const router = useRouter()
 
-  const isMobile = useMemo(() => {
-    if (typeof window === 'undefined') return false
-    return window.innerWidth < 900
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 900)
+    check()
+    window.addEventListener('resize', check)
+    return () => window.removeEventListener('resize', check)
   }, [])
 
   // ✅ signup flow blijft hetzelfde
@@ -215,10 +230,10 @@ export default function LoginPage() {
   }
 
   return (
-    <main style={s.page}>
+    <main style={isMobile ? { ...s.page, ...s.pageMobile } : s.page}>
       <div style={s.shell}>
         {/* TOPBAR */}
-        <div style={s.topbar}>
+        <div style={isMobile ? { ...s.topbar, ...s.topbarMobile } : s.topbar}>
           <div style={s.brand}>
             <div style={s.logo} />
             <div>
@@ -237,11 +252,11 @@ export default function LoginPage() {
         <div style={isMobile ? s.layoutMobile : s.layout}>
           {/* LEFT: HERO */}
           <div>
-            <div style={{ ...s.card }}>
-              <div style={s.h1}>Analyseer vastgoeddeals in seconden.</div>
+            <div style={isMobile ? { ...s.card, ...s.cardMobile } : s.card}>
+              <div style={isMobile ? s.h1Mobile : s.h1}>Analyseer vastgoeddeals in seconden.</div>
               <div style={{ ...s.muted, fontSize: 14, lineHeight: 1.6, maxWidth: 620 }}>
-                DealVerdicts helpt je snel beslissen met cashflow, rendement en een helder verdict.
-                Minder twijfelen. Meer goede deals.
+                DealVerdicts helpt je snel beslissen met cashflow, rendement en een helder verdict. Minder twijfelen. Meer
+                goede deals.
               </div>
 
               <div style={s.heroPillRow}>
@@ -294,7 +309,7 @@ export default function LoginPage() {
 
           {/* RIGHT: LOGIN CARD + PREVIEW */}
           <div>
-            <div style={s.card}>
+            <div style={isMobile ? { ...s.card, ...s.cardMobile } : s.card}>
               <div style={{ fontWeight: 950, fontSize: 18 }}>Log in om te starten</div>
               <div style={{ marginTop: 6, ...s.mini }}>
                 Eerst inloggen. Daarna kun je meteen deals toevoegen en verdicts krijgen.
@@ -326,12 +341,34 @@ export default function LoginPage() {
                 />
               </div>
 
-              <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                <button onClick={signIn} disabled={loading} style={s.btnPrimary}>
+              <div
+                style={{
+                  marginTop: 12,
+                  display: 'flex',
+                  gap: 10,
+                  flexWrap: 'wrap',
+                  flexDirection: isMobile ? 'column' : 'row',
+                }}
+              >
+                <button
+                  onClick={signIn}
+                  disabled={loading}
+                  style={{
+                    ...s.btnPrimary,
+                    width: isMobile ? '100%' : 'auto',
+                  }}
+                >
                   {loading ? 'Bezig…' : 'Inloggen →'}
                 </button>
 
-                <button onClick={signUp} disabled={loading} style={s.btn}>
+                <button
+                  onClick={signUp}
+                  disabled={loading}
+                  style={{
+                    ...s.btn,
+                    width: isMobile ? '100%' : 'auto',
+                  }}
+                >
                   {loading ? 'Bezig…' : 'Account maken'}
                 </button>
               </div>
@@ -344,7 +381,7 @@ export default function LoginPage() {
               </div>
             </div>
 
-            {/* “Image” / preview without external assets */}
+            {/* Preview: op mobiel onderaan (niet verbergen, maar verplaatsen) */}
             <div style={{ marginTop: 12, ...s.previewFrame }}>
               <div style={s.previewTop}>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -378,22 +415,16 @@ export default function LoginPage() {
 
                 <div style={{ ...s.previewCard, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.18)' }}>
                   <div style={{ fontWeight: 950 }}>Pro</div>
-                  <div style={{ marginTop: 6, ...s.mini }}>
-                    Meerdere scenario’s opslaan & vergelijken per deal.
-                  </div>
+                  <div style={{ marginTop: 6, ...s.mini }}>Meerdere scenario’s opslaan & vergelijken per deal.</div>
                 </div>
               </div>
 
-              <div style={{ marginTop: 10, ...s.mini }}>
-                Dit is een preview van de app-stijl (geen screenshot nodig).
-              </div>
+              <div style={{ marginTop: 10, ...s.mini }}>Dit is een preview van de app-stijl (geen screenshot nodig).</div>
             </div>
           </div>
         </div>
 
-        <div style={{ marginTop: 14, ...s.mini, textAlign: 'center' }}>
-          Na inloggen ga je door naar je deals.
-        </div>
+        <div style={{ marginTop: 14, ...s.mini, textAlign: 'center' }}>Na inloggen ga je door naar je deals.</div>
       </div>
     </main>
   )
